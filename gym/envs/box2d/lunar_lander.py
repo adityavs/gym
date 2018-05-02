@@ -76,8 +76,10 @@ class LunarLander(gym.Env):
         'video.frames_per_second' : FPS
     }
 
+    continuous = False
+
     def __init__(self):
-        self._seed()
+        self.seed()
         self.viewer = None
 
         self.world = Box2D.b2World()
@@ -86,15 +88,22 @@ class LunarLander(gym.Env):
         self.particles = []
 
         self.prev_reward = None
-        self._reset()
 
-        # useful range is -1 .. +1
-        high = np.array([np.inf]*8)
-        # nop, fire left engine, main engine, right engine
-        self.action_space = spaces.Discrete(4)
+        high = np.array([np.inf]*8)  # useful range is -1 .. +1, but spikes can be higher
         self.observation_space = spaces.Box(-high, high)
 
-    def _seed(self, seed=None):
+        if self.continuous:
+            # Action is two floats [main engine, left-right engines].
+            # Main engine: -1..0 off, 0..+1 throttle from 50% to 100% power. Engine can't work with less than 50% power.
+            # Left-right:  -1.0..-0.5 fire left engine, +0.5..+1.0 fire right engine, -0.5..0.5 off
+            self.action_space = spaces.Box(-1, +1, (2,))
+        else:
+            # Nop, fire left engine, main engine, right engine
+            self.action_space = spaces.Discrete(4)
+
+        self.reset()
+
+    def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
@@ -109,9 +118,10 @@ class LunarLander(gym.Env):
         self.world.DestroyBody(self.legs[0])
         self.world.DestroyBody(self.legs[1])
 
-    def _reset(self):
+    def reset(self):
         self._destroy()
-        self.world.contactListener = ContactDetector(self)
+        self.world.contactListener_keepref = ContactDetector(self)
+        self.world.contactListener = self.world.contactListener_keepref
         self.game_over = False
         self.prev_shaping = None
 
@@ -201,9 +211,9 @@ class LunarLander(gym.Env):
 
         self.drawlist = [self.lander] + self.legs
 
-        return self._step(0)[0]
+        return self.step(np.array([0,0]) if self.continuous else 0)[0]
 
-    def _create_particle(self, mass, x, y):
+    def _create_particle(self, mass, x, y, ttl):
         p = self.world.CreateDynamicBody(
             position = (x,y),
             angle=0.0,
@@ -215,7 +225,7 @@ class LunarLander(gym.Env):
                 maskBits=0x001,  # collide only with ground
                 restitution=0.3)
                 )
-        p.ttl = 1
+        p.ttl = ttl
         self.particles.append(p)
         self._clean_particles(False)
         return p
@@ -224,29 +234,45 @@ class LunarLander(gym.Env):
         while self.particles and (all or self.particles[0].ttl<0):
             self.world.DestroyBody(self.particles.pop(0))
 
-    def _step(self, action):
-        assert action in [0,1,2,3], "%r (%s) invalid " % (action,type(action))
+    def step(self, action):
+        assert self.action_space.contains(action), "%r (%s) invalid " % (action,type(action))
 
         # Engines
         tip  = (math.sin(self.lander.angle), math.cos(self.lander.angle))
         side = (-tip[1], tip[0]);
         dispersion = [self.np_random.uniform(-1.0, +1.0) / SCALE for _ in range(2)]
-        if action==2: # Main engine
+
+        m_power = 0.0
+        if (self.continuous and action[0] > 0.0) or (not self.continuous and action==2):
+            # Main engine
+            if self.continuous:
+                m_power = (np.clip(action[0], 0.0,1.0) + 1.0)*0.5   # 0.5..1.0
+                assert m_power>=0.5 and m_power <= 1.0
+            else:
+                m_power = 1.0
             ox =  tip[0]*(4/SCALE + 2*dispersion[0]) + side[0]*dispersion[1]   # 4 is move a bit downwards, +-2 for randomness
             oy = -tip[1]*(4/SCALE + 2*dispersion[0]) - side[1]*dispersion[1]
             impulse_pos = (self.lander.position[0] + ox, self.lander.position[1] + oy)
-            p = self._create_particle(3.5, *impulse_pos)    # particles are just a decoration, 3.5 is here to make particle speed adequate
-            p.ApplyLinearImpulse(           ( ox*MAIN_ENGINE_POWER,  oy*MAIN_ENGINE_POWER), impulse_pos, True)
-            self.lander.ApplyLinearImpulse( (-ox*MAIN_ENGINE_POWER, -oy*MAIN_ENGINE_POWER), impulse_pos, True)
+            p = self._create_particle(3.5, impulse_pos[0], impulse_pos[1], m_power)    # particles are just a decoration, 3.5 is here to make particle speed adequate
+            p.ApplyLinearImpulse(           ( ox*MAIN_ENGINE_POWER*m_power,  oy*MAIN_ENGINE_POWER*m_power), impulse_pos, True)
+            self.lander.ApplyLinearImpulse( (-ox*MAIN_ENGINE_POWER*m_power, -oy*MAIN_ENGINE_POWER*m_power), impulse_pos, True)
 
-        if action==1 or action==3: # Orientation engines
-            direction = action-2
+        s_power = 0.0
+        if (self.continuous and np.abs(action[1]) > 0.5) or (not self.continuous and action in [1,3]):
+            # Orientation engines
+            if self.continuous:
+                direction = np.sign(action[1])
+                s_power = np.clip(np.abs(action[1]), 0.5,1.0)
+                assert s_power>=0.5 and s_power <= 1.0
+            else:
+                direction = action-2
+                s_power = 1.0
             ox =  tip[0]*dispersion[0] + side[0]*(3*dispersion[1]+direction*SIDE_ENGINE_AWAY/SCALE)
             oy = -tip[1]*dispersion[0] - side[1]*(3*dispersion[1]+direction*SIDE_ENGINE_AWAY/SCALE)
             impulse_pos = (self.lander.position[0] + ox - tip[0]*17/SCALE, self.lander.position[1] + oy + tip[1]*SIDE_ENGINE_HEIGHT/SCALE)
-            p = self._create_particle(0.7, *impulse_pos)
-            p.ApplyLinearImpulse(           ( ox*SIDE_ENGINE_POWER,  oy*SIDE_ENGINE_POWER), impulse_pos, True)
-            self.lander.ApplyLinearImpulse( (-ox*SIDE_ENGINE_POWER, -oy*SIDE_ENGINE_POWER), impulse_pos, True)
+            p = self._create_particle(0.7, impulse_pos[0], impulse_pos[1], s_power)
+            p.ApplyLinearImpulse(           ( ox*SIDE_ENGINE_POWER*s_power,  oy*SIDE_ENGINE_POWER*s_power), impulse_pos, True)
+            self.lander.ApplyLinearImpulse( (-ox*SIDE_ENGINE_POWER*s_power, -oy*SIDE_ENGINE_POWER*s_power), impulse_pos, True)
 
         self.world.Step(1.0/FPS, 6*30, 2*30)
 
@@ -262,7 +288,7 @@ class LunarLander(gym.Env):
             1.0 if self.legs[0].ground_contact else 0.0,
             1.0 if self.legs[1].ground_contact else 0.0
             ]
-        assert(len(state)==8)
+        assert len(state)==8
 
         reward = 0
         shaping = \
@@ -274,10 +300,8 @@ class LunarLander(gym.Env):
             reward = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        if action==2:       # main engine
-            reward -= 0.30  # less fuel spent is better, about -30 for heurisic landing
-        elif action != 0:
-            reward -= 0.03
+        reward -= m_power*0.30  # less fuel spent is better, about -30 for heurisic landing
+        reward -= s_power*0.03
 
         done = False
         if self.game_over or abs(state[0]) >= 1.0:
@@ -288,13 +312,7 @@ class LunarLander(gym.Env):
             reward = +100
         return np.array(state), reward, done, {}
 
-    def _render(self, mode='human', close=False):
-        if close:
-            if self.viewer is not None:
-                self.viewer.close()
-                self.viewer = None
-            return
-
+    def render(self, mode='human'):
         from gym.envs.classic_control import rendering
         if self.viewer is None:
             self.viewer = rendering.Viewer(VIEWPORT_W, VIEWPORT_H)
@@ -329,50 +347,60 @@ class LunarLander(gym.Env):
             self.viewer.draw_polyline( [(x, flagy1), (x, flagy2)], color=(1,1,1) )
             self.viewer.draw_polygon( [(x, flagy2), (x, flagy2-10/SCALE), (x+25/SCALE, flagy2-5/SCALE)], color=(0.8,0.8,0) )
 
-        self.viewer.render()
-        if mode == 'rgb_array':
-            return self.viewer.get_array()
-        elif mode is 'human':
-            pass
-        else:
-            return super(LunarLander, self).render(mode=mode)
+        return self.viewer.render(return_rgb_array = mode=='rgb_array')
+
+    def close(self):
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None
+
+class LunarLanderContinuous(LunarLander):
+    continuous = True
+
+def heuristic(env, s):
+    # Heuristic for:
+    # 1. Testing. 
+    # 2. Demonstration rollout.
+    angle_targ = s[0]*0.5 + s[2]*1.0         # angle should point towards center (s[0] is horizontal coordinate, s[2] hor speed)
+    if angle_targ >  0.4: angle_targ =  0.4  # more than 0.4 radians (22 degrees) is bad
+    if angle_targ < -0.4: angle_targ = -0.4
+    hover_targ = 0.55*np.abs(s[0])           # target y should be proporional to horizontal offset
+
+    # PID controller: s[4] angle, s[5] angularSpeed
+    angle_todo = (angle_targ - s[4])*0.5 - (s[5])*1.0
+    #print("angle_targ=%0.2f, angle_todo=%0.2f" % (angle_targ, angle_todo))
+
+    # PID controller: s[1] vertical coordinate s[3] vertical speed
+    hover_todo = (hover_targ - s[1])*0.5 - (s[3])*0.5
+    #print("hover_targ=%0.2f, hover_todo=%0.2f" % (hover_targ, hover_todo))
+
+    if s[6] or s[7]: # legs have contact
+        angle_todo = 0
+        hover_todo = -(s[3])*0.5  # override to reduce fall speed, that's all we need after contact
+
+    if env.continuous:
+        a = np.array( [hover_todo*20 - 1, -angle_todo*20] )
+        a = np.clip(a, -1, +1)
+    else:
+        a = 0
+        if hover_todo > np.abs(angle_todo) and hover_todo > 0.05: a = 2
+        elif angle_todo < -0.05: a = 3
+        elif angle_todo > +0.05: a = 1
+    return a
 
 if __name__=="__main__":
-    # Heuristic for testing.
-    env = LunarLander()
-    env.reset()
-    steps = 0
+    #env = LunarLander()
+    env = LunarLanderContinuous()
+    s = env.reset()
     total_reward = 0
-    a = 0
+    steps = 0
     while True:
+        a = heuristic(env, s)
         s, r, done, info = env.step(a)
+        env.render()
         total_reward += r
         if steps % 20 == 0 or done:
             print(["{:+0.2f}".format(x) for x in s])
             print("step {} total_reward {:+0.2f}".format(steps, total_reward))
         steps += 1
-
-        angle_targ = s[0]*0.5 + s[2]*1.0         # angle should point towards center (s[0] is horizontal coordinate, s[2] hor speed)
-        if angle_targ >  0.4: angle_targ =  0.4  # more than 0.4 radians (22 degrees) is bad
-        if angle_targ < -0.4: angle_targ = -0.4
-        hover_targ = 0.55*np.abs(s[0])           # target y should be proporional to horizontal offset
-
-        # PID controller: s[4] angle, s[5] angularSpeed
-        angle_todo = (angle_targ - s[4])*0.5 - (s[5])*1.0
-        #print("angle_targ=%0.2f, angle_todo=%0.2f" % (angle_targ, angle_todo))
-
-        # PID controller: s[1] vertical coordinate s[3] vertical speed
-        hover_todo = (hover_targ - s[1])*0.5 - (s[3])*0.5
-        #print("hover_targ=%0.2f, hover_todo=%0.2f" % (hover_targ, hover_todo))
-
-        if s[6] or s[7]: # legs have contact
-            angle_todo = 0
-            hover_todo = -(s[3])*0.5  # override to reduce fall speed, that's all we need after contact
-
-        a = 0
-        if hover_todo > np.abs(angle_todo) and hover_todo > 0.05: a = 2
-        elif angle_todo < -0.05: a = 3
-        elif angle_todo > +0.05: a = 1
-
-        env.render()
         if done: break

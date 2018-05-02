@@ -5,7 +5,19 @@ class Error(Exception):
 
 # Local errors
 
-class UnregisteredEnv(Error):
+class Unregistered(Error):
+    """Raised when the user requests an item from the registry that does
+    not actually exist.
+    """
+    pass
+
+class UnregisteredEnv(Unregistered):
+    """Raised when the user requests an env from the registry that does
+    not actually exist.
+    """
+    pass
+
+class UnregisteredBenchmark(Unregistered):
     """Raised when the user requests an env from the registry that does
     not actually exist.
     """
@@ -78,12 +90,11 @@ class APIError(Error):
         else:
             return self._message
 
-    if sys.version_info > (3, 0):
-        def __str__(self):
-            return self.__unicode__()
-    else:
-        def __str__(self):
+    def __str__(self):
+        try:               # Python 2
             return unicode(self).encode('utf-8')
+        except NameError:  # Python 3
+            return self.__unicode__()
 
 
 class APIConnectionError(APIError):
@@ -112,4 +123,17 @@ class VideoRecorderError(Error):
     pass
 
 class InvalidFrame(Error):
+    pass
+
+# Wrapper errors
+
+class DoubleWrapperError(Error):
+    pass
+
+
+class WrapAfterConfigureError(Error):
+    pass
+
+
+class RetriesExceededError(Error):
     pass

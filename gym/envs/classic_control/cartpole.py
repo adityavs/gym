@@ -1,16 +1,14 @@
 """
 Classic cart-pole system implemented by Rich Sutton et al.
-Copied from https://webdocs.cs.ualberta.ca/~sutton/book/code/pole.c
+Copied from http://incompleteideas.net/sutton/book/code/pole.c
+permalink: https://perma.cc/C9ZM-652R
 """
 
-import logging
 import math
 import gym
-from gym import spaces
+from gym import spaces, logger
 from gym.utils import seeding
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 class CartPoleEnv(gym.Env):
     metadata = {
@@ -33,23 +31,27 @@ class CartPoleEnv(gym.Env):
         self.x_threshold = 2.4
 
         # Angle limit set to 2 * theta_threshold_radians so failing observation is still within bounds
-        high = np.array([self.x_threshold, np.inf, self.theta_threshold_radians * 2, np.inf])
+        high = np.array([
+            self.x_threshold * 2,
+            np.finfo(np.float32).max,
+            self.theta_threshold_radians * 2,
+            np.finfo(np.float32).max])
+
         self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Box(-high, high)
 
-        self._seed()
-        self.reset()
+        self.seed()
         self.viewer = None
+        self.state = None
 
         self.steps_beyond_done = None
 
-    def _seed(self, seed=None):
+    def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
-    def _step(self, action):
-        action = action
-        assert action==0 or action==1, "%r (%s) invalid"%(action, type(action))
+    def step(self, action):
+        assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
         state = self.state
         x, x_dot, theta, theta_dot = state
         force = self.force_mag if action==1 else -self.force_mag
@@ -83,18 +85,12 @@ class CartPoleEnv(gym.Env):
 
         return np.array(self.state), reward, done, {}
 
-    def _reset(self):
+    def reset(self):
         self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
         self.steps_beyond_done = None
         return np.array(self.state)
 
-    def _render(self, mode='human', close=False):
-        if close:
-            if self.viewer is not None:
-                self.viewer.close()
-                self.viewer = None
-            return
-
+    def render(self, mode='human'):
         screen_width = 600
         screen_height = 400
 
@@ -131,13 +127,14 @@ class CartPoleEnv(gym.Env):
             self.track.set_color(0,0,0)
             self.viewer.add_geom(self.track)
 
+        if self.state is None: return None
+
         x = self.state
         cartx = x[0]*scale+screen_width/2.0 # MIDDLE OF CART
         self.carttrans.set_translation(cartx, carty)
         self.poletrans.set_rotation(-x[2])
 
-        self.viewer.render()
-        if mode == 'rgb_array':
-            return self.viewer.get_array()
-        elif mode == 'human':
-            pass
+        return self.viewer.render(return_rgb_array = mode=='rgb_array')
+
+    def close(self):
+        if self.viewer: self.viewer.close()

@@ -29,14 +29,14 @@ class NChainEnv(gym.Env):
         self.state = 0  # Start at beginning of the chain
         self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Discrete(self.n)
-        self._seed()
+        self.seed()
 
-    def _seed(self, seed=None):
+    def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
-    def _step(self, action):
-        assert(self.action_space.contains(action))
+    def step(self, action):
+        assert self.action_space.contains(action)
         if self.np_random.rand() < self.slip:
             action = not action  # agent slipped, reverse action taken
         if action:  # 'backwards': go back to the beginning, get small reward
@@ -50,6 +50,6 @@ class NChainEnv(gym.Env):
         done = False
         return self.state, reward, done, {}
 
-    def _reset(self):
+    def reset(self):
         self.state = 0
         return self.state

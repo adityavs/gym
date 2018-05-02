@@ -20,13 +20,13 @@ class PendulumEnv(gym.Env):
         self.action_space = spaces.Box(low=-self.max_torque, high=self.max_torque, shape=(1,))
         self.observation_space = spaces.Box(low=-high, high=high)
 
-        self._seed()
+        self.seed()
 
-    def _seed(self, seed=None):
+    def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
-    def _step(self,u):
+    def step(self,u):
         th, thdot = self.state # th := theta
 
         g = 10.
@@ -34,8 +34,8 @@ class PendulumEnv(gym.Env):
         l = 1.
         dt = self.dt
 
-        self.last_u = u # for rendering
         u = np.clip(u, -self.max_torque, self.max_torque)[0]
+        self.last_u = u # for rendering
         costs = angle_normalize(th)**2 + .1*thdot**2 + .001*(u**2)
 
         newthdot = thdot + (-3*g/(2*l) * np.sin(th + np.pi) + 3./(m*l**2)*u) * dt
@@ -45,7 +45,7 @@ class PendulumEnv(gym.Env):
         self.state = np.array([newth, newthdot])
         return self._get_obs(), -costs, False, {}
 
-    def _reset(self):
+    def reset(self):
         high = np.array([np.pi, 1])
         self.state = self.np_random.uniform(low=-high, high=high)
         self.last_u = None
@@ -55,12 +55,7 @@ class PendulumEnv(gym.Env):
         theta, thetadot = self.state
         return np.array([np.cos(theta), np.sin(theta), thetadot])
 
-    def _render(self, mode='human', close=False):
-        if close:
-            if self.viewer is not None:
-                self.viewer.close()
-                self.viewer = None
-            return
+    def render(self, mode='human'):
 
         if self.viewer is None:
             from gym.envs.classic_control import rendering
@@ -84,12 +79,10 @@ class PendulumEnv(gym.Env):
         if self.last_u:
             self.imgtrans.scale = (-self.last_u/2, np.abs(self.last_u)/2)
 
+        return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
-        self.viewer.render()
-        if mode == 'rgb_array':
-            return self.viewer.get_array()
-        elif mode == 'human':
-            pass
+    def close(self):
+        if self.viewer: self.viewer.close()
 
 def angle_normalize(x):
     return (((x+np.pi) % (2*np.pi)) - np.pi)
